@@ -19,7 +19,7 @@
 
 namespace bustub {
 
-TEST(LRUReplacerTest, DISABLED_SampleTest) {
+TEST(LRUReplacerTest, SampleTest) {
   LRUReplacer lru_replacer(7);
 
   // Scenario: unpin six elements, i.e. add them to the replacer.
@@ -59,4 +59,21 @@ TEST(LRUReplacerTest, DISABLED_SampleTest) {
   EXPECT_EQ(4, value);
 }
 
+TEST(LRUReplacerTest, PinTest) {
+  LRUReplacer lru_replacer(7);
+  lru_replacer.Unpin(1);
+  lru_replacer.Unpin(2);
+  lru_replacer.Unpin(3);
+  lru_replacer.Unpin(4);
+
+  EXPECT_EQ(4, lru_replacer.Size());
+  lru_replacer.Pin(3);
+  int value;
+  lru_replacer.Victim(&value);
+  EXPECT_EQ(1, value);
+  lru_replacer.Victim(&value);
+  EXPECT_EQ(2, value);
+
+  EXPECT_EQ(1, lru_replacer.Size());
+}
 }  // namespace bustub
