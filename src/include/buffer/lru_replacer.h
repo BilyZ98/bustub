@@ -53,6 +53,7 @@ class LRUReplacer : public Replacer {
   // do we need latch to provide thread-safety
   std::list<frame_id_t> ring_buffer_;
   std::unordered_map<frame_id_t, std::list<frame_id_t>::iterator> frame_it_map_;
+  std::mutex latch_;
 };
 
 }  // namespace bustub

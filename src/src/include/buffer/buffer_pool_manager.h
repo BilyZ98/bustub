@@ -152,8 +152,15 @@ class BufferPoolManager {
    */
   void FlushAllPagesImpl();
 
+  /**
+   * pick a free frame to be put into new page
+   */ 
   frame_id_t PickVictimFrameL();
+
   bool AllPagesPinnedL();
+
+  bool FlushPageImplL(page_id_t page_id);
+
 
   void UpdatePageMetaData(Page *page, page_id_t page_id) {
     page->page_id_ = page_id;

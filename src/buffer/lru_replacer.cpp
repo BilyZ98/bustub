@@ -12,6 +12,7 @@
 
 #include "buffer/lru_replacer.h"
 #include <algorithm>
+#include <mutex>
 namespace bustub {
 
 LRUReplacer::LRUReplacer(size_t num_pages) {
@@ -22,6 +23,7 @@ LRUReplacer::LRUReplacer(size_t num_pages) {
 LRUReplacer::~LRUReplacer() = default;
 
 bool LRUReplacer::Victim(frame_id_t *frame_id) {
+  std::scoped_lock lru_latch{latch_};
   // find one victim and evict it if there is frame exists
   if (ring_buffer_.empty()) {
     return false;
@@ -35,6 +37,7 @@ bool LRUReplacer::Victim(frame_id_t *frame_id) {
 }
 
 void LRUReplacer::Pin(frame_id_t frame_id) {
+  std::scoped_lock lru_latch{latch_};
   // remove the frame_id from lru
   if (frame_it_map_.find(frame_id) != frame_it_map_.end()) {
     std::list<frame_id_t>::iterator iter = frame_it_map_[frame_id];
@@ -47,6 +50,8 @@ void LRUReplacer::Pin(frame_id_t frame_id) {
 }
 
 void LRUReplacer::Unpin(frame_id_t frame_id) {
+  std::scoped_lock lru_latch{latch_};
+
   // add the frame_id to lru
   if (frame_it_map_.find(frame_id) != frame_it_map_.end()) {
     return;

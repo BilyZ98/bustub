@@ -260,3 +260,6 @@ docs/dev
 
 # Vagrant
 .vagrant
+
+*.zip
+src/src2

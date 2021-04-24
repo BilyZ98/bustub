@@ -12,7 +12,6 @@
 
 #include "buffer/buffer_pool_manager.h"
 
-#include <algorithm>
 #include <list>
 #include <unordered_map>
 
@@ -35,6 +34,57 @@ BufferPoolManager::~BufferPoolManager() {
   delete replacer_;
 }
 
+
+
+// Page *BufferPoolManager::FetchPageImpl(page_id_t page_id) {
+//   // 1.     Search the page table for the requested page (P).
+//   // 1.1    If P exists, pin it and return it immediately.
+//   // 1.2    If P does not exist, find a replacement page (R) from either the free list or the replacer.
+//   //        Note that pages are always found from the free list first.
+//   // 2.     If R is dirty, write it back to the disk.
+//   // 3.     Delete R from the page table and insert P.
+//   // 4.     Update P's metadata, read in the page content from disk, and then return a pointer to P.
+
+//   std::scoped_lock scope_latch{latch_};
+//   if (page_table_.find(page_id) != page_table_.cend()) {
+//     frame_id_t frame_id = page_table_[page_id];
+//     pages_[frame_id].pin_count_++;
+//     replacer_->Pin(frame_id);
+
+//     return &pages_[frame_id];
+//   }
+
+//   frame_id_t frame_id = INVALID_PAGE_ID;
+//   if (!free_list_.empty()) {
+//     frame_id = free_list_.front();
+//     free_list_.pop_front();
+
+//     UpdatePageMetaData(&pages_[frame_id], page_id);
+//     pages_[frame_id].pin_count_++;
+//     page_table_[page_id] = frame_id;
+
+//     disk_manager_->ReadPage(page_id, pages_[frame_id].GetData());
+//     return &pages_[frame_id];
+//   } else if(replacer_->Victim(&frame_id)) {
+//     page_id_t victim_page_id = pages_[frame_id].GetPageId();
+
+//     if (pages_[frame_id].IsDirty()) {
+//       disk_manager_->WritePage(victim_page_id, pages_[frame_id].GetData());
+//     }
+//     page_table_.erase(victim_page_id);
+//     page_table_[page_id] = frame_id;
+
+//     UpdatePageMetaData(&pages_[frame_id], page_id);
+//     pages_[frame_id].pin_count_++;
+//     disk_manager_->ReadPage(page_id, pages_[frame_id].data_);
+//     return &pages_[frame_id];
+//   }
+
+//   return nullptr;
+
+// }
+
+
 Page *BufferPoolManager::FetchPageImpl(page_id_t page_id) {
   // 1.     Search the page table for the requested page (P).
   // 1.1    If P exists, pin it and return it immediately.
@@ -44,35 +94,23 @@ Page *BufferPoolManager::FetchPageImpl(page_id_t page_id) {
   // 3.     Delete R from the page table and insert P.
   // 4.     Update P's metadata, read in the page content from disk, and then return a pointer to P.
 
-  latch_.lock();
-  if (page_table_.find(page_id) != page_table_.end()) {
+  std::scoped_lock scope_latch{latch_};
+  if (page_table_.find(page_id) != page_table_.cend()) {
     frame_id_t frame_id = page_table_[page_id];
+    pages_[frame_id].pin_count_++;
     replacer_->Pin(frame_id);
 
-    // we should lock the page's write latch and add count
-    pages_[frame_id].pin_count_++;
-    latch_.unlock();
     return &pages_[frame_id];
   }
 
-  frame_id_t frame_id = PickVictimFrameL();
-  if (frame_id < 0) {
-    latch_.unlock();
+  frame_id_t buffer_frame_id = GetFreeFrameL(page_id);
+  if (buffer_frame_id < 0) {
     return nullptr;
   }
-  page_id_t victim_page_id = pages_[frame_id].GetPageId();  // page_table_[frame_id];
-  if (pages_[frame_id].IsDirty()) {
-    FlushPageImpl(page_table_[frame_id]);
-  }
-  page_table_.erase(victim_page_id);
-  page_table_[page_id] = frame_id;
 
-  UpdatePageMetaData(&pages_[frame_id], page_id);
-  pages_[frame_id].pin_count_ += 1;
-  disk_manager_->ReadPage(page_id, pages_[frame_id].GetData());
+  disk_manager_->ReadPage(page_id, pages_[buffer_frame_id].data_);
+  return &pages_[buffer_frame_id];
 
-  latch_.unlock();
-  return &pages_[frame_id];
 }
 
 bool BufferPoolManager::UnpinPageImpl(page_id_t page_id, bool is_dirty) {
@@ -80,9 +118,8 @@ bool BufferPoolManager::UnpinPageImpl(page_id_t page_id, bool is_dirty) {
   // if pinned, the page should be in pages
   // unpin will the put the page into the replacer.
 
-  latch_.lock();
+  std::scoped_lock buffer_latch{latch_};
   if (page_table_.find(page_id) == page_table_.end()) {
-    latch_.unlock();
     return false;
   }
   frame_id_t frame_id = page_table_[page_id];
@@ -90,33 +127,39 @@ bool BufferPoolManager::UnpinPageImpl(page_id_t page_id, bool is_dirty) {
     pages_[frame_id].is_dirty_ = true;
   }
 
-  if (pages_[frame_id].GetPinCount() <= 0) {
-    latch_.unlock();
-    return false;
+  if (pages_[frame_id].GetPinCount() > 0) {
+    pages_[frame_id].pin_count_--;
   }
-  pages_[frame_id].pin_count_--;
   if (pages_[frame_id].GetPinCount() == 0) {
     replacer_->Unpin(frame_id);
   }
 
-  latch_.unlock();
   return true;
 }
 
+
+
 // flush the dirty page to the disk and reset the page dirty bit
 bool BufferPoolManager::FlushPageImpl(page_id_t page_id) {
+  std::scoped_lock buffer_latch{latch_};
   // Make sure you call DiskManager::WritePage!
+  bool flush_success = FlushPageImplL(page_id);
+  return flush_success;
+}
+
+bool BufferPoolManager::FlushPageImplL(page_id_t page_id) {
   if (page_table_.find(page_id) == page_table_.end()) {
     return false;
   }
   frame_id_t frame_id = page_table_[page_id];
-  if (pages_[frame_id].IsDirty()) {
-    disk_manager_->WritePage(page_id, pages_[frame_id].GetData());
-    pages_[frame_id].is_dirty_ = false;
-  }
+
+  disk_manager_->WritePage(page_id, pages_[frame_id].GetData());
+  pages_[frame_id].is_dirty_ = false;
 
   return true;
+
 }
+
 
 Page *BufferPoolManager::NewPageImpl(page_id_t *page_id) {
   // 0.   Make sure you call DiskManager::AllocatePage!
@@ -125,36 +168,15 @@ Page *BufferPoolManager::NewPageImpl(page_id_t *page_id) {
   // 3.   Update P's metadata, zero out memory and add P to the page table.
   // 4.   Set the page ID output parameter. Return a pointer to P.
 
-  latch_.lock();
-  if (AllPagesPinnedL()) {
-    latch_.unlock();
-    return nullptr;
-  }
-
+  std::scoped_lock buffer_latch{latch_};
   page_id_t pid = disk_manager_->AllocatePage();
-  frame_id_t frame_id = PickVictimFrameL();
-  page_id_t victim_page_id = pages_[frame_id].GetPageId();
-
-  // do we need to flush the victim page?
-  if (pages_[frame_id].IsDirty()) {
-    FlushPageImpl(victim_page_id);
-  }
-  // only after we flush the page we can erase the page_id from
-  // the page_table, or the flush_page_impl won't flush
-  // fuck.
-  page_table_.erase(victim_page_id);
-
-  UpdatePageMetaData(&pages_[frame_id], pid);
-  pages_[frame_id].pin_count_ += 1;
-  pages_[frame_id].ResetMemory();
-
-  // erase the original page id from the page table.
-  page_table_[pid] = frame_id;
   *page_id = pid;
-  latch_.unlock();
-  return &pages_[frame_id];
 
-  // Page *page = FetchPageImpl(pid);
+  frame_id_t buffer_frame_id = GetFreeFrameL(pid);
+  if (buffer_frame_id < 0) {
+    return nullptr;
+  } 
+  return &pages_[buffer_frame_id];
 }
 
 bool BufferPoolManager::DeletePageImpl(page_id_t page_id) {
@@ -164,36 +186,30 @@ bool BufferPoolManager::DeletePageImpl(page_id_t page_id) {
   // 2.   If P exists, but has a non-zero pin-count, return false. Someone is using the page.
   // 3.   Otherwise, P can be deleted. Remove P from the page table, reset its metadata and return it to the free list.
 
-  latch_.lock();
+  std::scoped_lock buffer_latch{latch_};
+  disk_manager_->DeallocatePage(page_id);
   if (page_table_.find(page_id) == page_table_.end()) {
-    latch_.unlock();
     return true;
   }
 
   frame_id_t frame_id = page_table_[page_id];
   if (pages_[frame_id].GetPinCount() > 0) {
-    latch_.unlock();
     return false;
   }
-  disk_manager_->DeallocatePage(page_id);
   page_table_.erase(page_id);
   UpdatePageMetaData(&pages_[frame_id], INVALID_PAGE_ID);
   free_list_.push_back(frame_id);
 
-  latch_.unlock();
   return true;
 }
 
 void BufferPoolManager::FlushAllPagesImpl() {
   // You can do it!
-  latch_.lock();
   for (size_t i = 0; i < pool_size_; i++) {
     if (pages_[i].IsDirty()) {
       FlushPageImpl(i);
-      pages_[i].is_dirty_ = false;
     }
   }
-  latch_.unlock();
 }
 
 frame_id_t BufferPoolManager::PickVictimFrameL() {
@@ -201,15 +217,43 @@ frame_id_t BufferPoolManager::PickVictimFrameL() {
   if (!free_list_.empty()) {
     frame_id = free_list_.front();
     free_list_.pop_front();
-  } else {
-    if (!replacer_->Victim(&frame_id)) {
-      // LOG_INFO("fetchpage: no victim is found");
-    }
+    return frame_id;
+  } else if(replacer_->Victim(&frame_id)) {
+    return frame_id;
   }
+
+  return -1;
+}
+
+bool BufferPoolManager::AllPagesPinnedL() { return replacer_->Size() == 0 && free_list_.empty(); }
+
+frame_id_t BufferPoolManager::GetFreeFrameL(page_id_t page_id) {
+
+  if (AllPagesPinnedL()) {
+    return -1;
+  }
+
+  frame_id_t frame_id = PickVictimFrameL();
+  page_id_t victim_page_id = pages_[frame_id].GetPageId();
+
+  // do we need to flush the victim page?
+  if (victim_page_id != INVALID_PAGE_ID && pages_[frame_id].IsDirty()) {
+    FlushPageImplL(victim_page_id);
+  }
+  // only after we flush the page we can erase the page_id from
+  // the page_table, or the flush_page_impl won't flush
+  // fuck.
+  page_table_.erase(victim_page_id);
+
+  UpdatePageMetaData(&pages_[frame_id], page_id);
+  pages_[frame_id].pin_count_ += 1;
+  pages_[frame_id].ResetMemory();
+
+  // erase the original page id from the page table.
+  page_table_[page_id] = frame_id;
 
   return frame_id;
 }
 
-bool BufferPoolManager::AllPagesPinnedL() { return replacer_->Size() == 0 && free_list_.empty(); }
 
 }  // namespace bustub

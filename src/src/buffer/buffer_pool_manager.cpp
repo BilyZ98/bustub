@@ -12,7 +12,6 @@
 
 #include "buffer/buffer_pool_manager.h"
 
-#include <algorithm>
 #include <list>
 #include <unordered_map>
 
@@ -44,7 +43,7 @@ Page *BufferPoolManager::FetchPageImpl(page_id_t page_id) {
   // 3.     Delete R from the page table and insert P.
   // 4.     Update P's metadata, read in the page content from disk, and then return a pointer to P.
 
-  latch_.lock();
+  std::scoped_lock buffer_latch{latch_};
   if (page_table_.find(page_id) != page_table_.end()) {
     frame_id_t frame_id = page_table_[page_id];
     replacer_->Pin(frame_id);
@@ -62,7 +61,7 @@ Page *BufferPoolManager::FetchPageImpl(page_id_t page_id) {
   }
   page_id_t victim_page_id = pages_[frame_id].GetPageId();  // page_table_[frame_id];
   if (pages_[frame_id].IsDirty()) {
-    FlushPageImpl(page_table_[frame_id]);
+    FlushPageImplL(page_table_[frame_id]);
   }
   page_table_.erase(victim_page_id);
   page_table_[page_id] = frame_id;
@@ -71,7 +70,6 @@ Page *BufferPoolManager::FetchPageImpl(page_id_t page_id) {
   pages_[frame_id].pin_count_ += 1;
   disk_manager_->ReadPage(page_id, pages_[frame_id].GetData());
 
-  latch_.unlock();
   return &pages_[frame_id];
 }
 
@@ -80,7 +78,7 @@ bool BufferPoolManager::UnpinPageImpl(page_id_t page_id, bool is_dirty) {
   // if pinned, the page should be in pages
   // unpin will the put the page into the replacer.
 
-  latch_.lock();
+  std::scoped_lock buffer_latch{latch_};
   if (page_table_.find(page_id) == page_table_.end()) {
     latch_.unlock();
     return false;
@@ -99,13 +97,18 @@ bool BufferPoolManager::UnpinPageImpl(page_id_t page_id, bool is_dirty) {
     replacer_->Unpin(frame_id);
   }
 
-  latch_.unlock();
   return true;
 }
 
 // flush the dirty page to the disk and reset the page dirty bit
 bool BufferPoolManager::FlushPageImpl(page_id_t page_id) {
+  std::scoped_lock buffer_latch{latch_};
   // Make sure you call DiskManager::WritePage!
+  bool flush_success = FlushPageImplL(page_id);
+  return flush_success;
+}
+
+bool BufferPoolManager::FlushPageImplL(page_id_t page_id) {
   if (page_table_.find(page_id) == page_table_.end()) {
     return false;
   }
@@ -116,7 +119,9 @@ bool BufferPoolManager::FlushPageImpl(page_id_t page_id) {
   }
 
   return true;
+
 }
+
 
 Page *BufferPoolManager::NewPageImpl(page_id_t *page_id) {
   // 0.   Make sure you call DiskManager::AllocatePage!
@@ -125,7 +130,7 @@ Page *BufferPoolManager::NewPageImpl(page_id_t *page_id) {
   // 3.   Update P's metadata, zero out memory and add P to the page table.
   // 4.   Set the page ID output parameter. Return a pointer to P.
 
-  latch_.lock();
+  std::scoped_lock buffer_latch{latch_};
   if (AllPagesPinnedL()) {
     latch_.unlock();
     return nullptr;
@@ -137,7 +142,7 @@ Page *BufferPoolManager::NewPageImpl(page_id_t *page_id) {
 
   // do we need to flush the victim page?
   if (pages_[frame_id].IsDirty()) {
-    FlushPageImpl(victim_page_id);
+    FlushPageImplL(victim_page_id);
   }
   // only after we flush the page we can erase the page_id from
   // the page_table, or the flush_page_impl won't flush
@@ -151,7 +156,6 @@ Page *BufferPoolManager::NewPageImpl(page_id_t *page_id) {
   // erase the original page id from the page table.
   page_table_[pid] = frame_id;
   *page_id = pid;
-  latch_.unlock();
   return &pages_[frame_id];
 
   // Page *page = FetchPageImpl(pid);
@@ -164,7 +168,7 @@ bool BufferPoolManager::DeletePageImpl(page_id_t page_id) {
   // 2.   If P exists, but has a non-zero pin-count, return false. Someone is using the page.
   // 3.   Otherwise, P can be deleted. Remove P from the page table, reset its metadata and return it to the free list.
 
-  latch_.lock();
+  std::scoped_lock buffer_latch{latch_};
   if (page_table_.find(page_id) == page_table_.end()) {
     latch_.unlock();
     return true;
@@ -180,20 +184,16 @@ bool BufferPoolManager::DeletePageImpl(page_id_t page_id) {
   UpdatePageMetaData(&pages_[frame_id], INVALID_PAGE_ID);
   free_list_.push_back(frame_id);
 
-  latch_.unlock();
   return true;
 }
 
 void BufferPoolManager::FlushAllPagesImpl() {
   // You can do it!
-  latch_.lock();
   for (size_t i = 0; i < pool_size_; i++) {
     if (pages_[i].IsDirty()) {
-      FlushPageImpl(i);
-      pages_[i].is_dirty_ = false;
+      FlushPageImplL(i);
     }
   }
-  latch_.unlock();
 }
 
 frame_id_t BufferPoolManager::PickVictimFrameL() {
