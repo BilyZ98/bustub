@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "buffer/lru_replacer.h"
+#include <assert.h>
 #include <algorithm>
 #include <mutex>
 namespace bustub {
