@@ -62,7 +62,7 @@ Page *BufferPoolManager::FetchPageImpl(page_id_t page_id) {
   }
   page_id_t victim_page_id = pages_[frame_id].GetPageId();  // page_table_[frame_id];
   if (pages_[frame_id].IsDirty()) {
-    FlushPageImpl(page_table_[frame_id]);
+    FlushPageHelper(victim_page_id);
   }
   page_table_.erase(victim_page_id);
   page_table_[page_id] = frame_id;
@@ -103,9 +103,7 @@ bool BufferPoolManager::UnpinPageImpl(page_id_t page_id, bool is_dirty) {
   return true;
 }
 
-// flush the dirty page to the disk and reset the page dirty bit
-bool BufferPoolManager::FlushPageImpl(page_id_t page_id) {
-  // Make sure you call DiskManager::WritePage!
+bool BufferPoolManager::FlushPageHelper(page_id_t page_id) {
   if (page_table_.find(page_id) == page_table_.end()) {
     return false;
   }
@@ -116,6 +114,16 @@ bool BufferPoolManager::FlushPageImpl(page_id_t page_id) {
   }
 
   return true;
+}
+
+// flush the dirty page to the disk and reset the page dirty bit
+bool BufferPoolManager::FlushPageImpl(page_id_t page_id) {
+  // Make sure you call DiskManager::WritePage!
+  latch_.lock();
+
+  bool res = FlushPageHelper(page_id);
+  latch_.unlock();
+  return res;
 }
 
 Page *BufferPoolManager::NewPageImpl(page_id_t *page_id) {
@@ -137,7 +145,7 @@ Page *BufferPoolManager::NewPageImpl(page_id_t *page_id) {
 
   // do we need to flush the victim page?
   if (pages_[frame_id].IsDirty()) {
-    FlushPageImpl(victim_page_id);
+    FlushPageHelper(victim_page_id);
   }
   // only after we flush the page we can erase the page_id from
   // the page_table, or the flush_page_impl won't flush
@@ -189,7 +197,7 @@ void BufferPoolManager::FlushAllPagesImpl() {
   latch_.lock();
   for (size_t i = 0; i < pool_size_; i++) {
     if (pages_[i].IsDirty()) {
-      FlushPageImpl(i);
+      FlushPageHelper(i);
       pages_[i].is_dirty_ = false;
     }
   }

@@ -161,6 +161,8 @@ class BufferPoolManager {
     page->is_dirty_ = false;
   }
 
+  bool FlushPageHelper(page_id_t page_id);
+
   /** Number of pages in the buffer pool. */
   size_t pool_size_;
   /** Array of buffer pool pages. */
